@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+desktop/node_modules/
+server/node_modules/
+web/node_modules/
+
+# Build artifacts
+dist/
+server/dist/
+web/dist/
+desktop/dist/
+
+# Local config — secrets
+iproyal-config.json
+server/.env
+web/.env
+desktop/.env
+.env
+
+# Runtime
+server/logs/
+chrome-profiles/
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Electron build output
+desktop/out/
+desktop/release/
