@@ -197,7 +197,7 @@ r.get('/metrics', async (_req, res) => {
 });
 
 // ── Smart targets — preset фильтры для outreach ────────────────────────────
-const TARGETS: Array<{ id: string; label: string; description: string; query: any; sort?: any }> = [
+export const TARGETS: Array<{ id: string; label: string; description: string; query: any; sort?: any }> = [
   {
     id: 'need-website',
     label: '🌐 Нужен сайт',
@@ -376,6 +376,49 @@ r.get('/smart-targets/:id', async (req, res) => {
     col().find(t.query, { projection }).sort(sort).skip(skip).limit(limit).toArray(),
   ]);
   res.json({ total, items, target: { id: t.id, label: t.label, description: t.description } });
+});
+
+// ── Selection resolver — резолвит описание выборки в count + sample IDs ─────
+// Используется bulk SEO research: фронт шлёт {kind:'smart-target', targetId} ИЛИ
+// {kind:'manual', providerIds[]}, бэк проверяет валидность и возвращает что
+// получилось. Manual cap = 500 (для больших — smart-target).
+r.post('/selection/resolve', async (req, res) => {
+  const body = req.body || {};
+  const kind = body.kind;
+  if (kind === 'smart-target') {
+    const t = TARGETS.find(x => x.id === body.targetId);
+    if (!t) return res.status(404).json({ error: `smart-target '${body.targetId}' not found` });
+    const c = col();
+    const count = await c.countDocuments(t.query);
+    const sample = await c.find(t.query, { projection: { _id: 1, name: 1, category: 1, city: 1 } }).limit(5).toArray();
+    return res.json({
+      kind, targetId: t.id, label: t.label, description: t.description,
+      count, sampleIds: sample.map(s => String(s._id)),
+      sample: sample.map(s => ({ _id: String(s._id), name: s.name, category: s.category, city: s.city })),
+    });
+  }
+  if (kind === 'manual') {
+    const ids: string[] = Array.isArray(body.providerIds) ? body.providerIds : [];
+    if (ids.length === 0) return res.status(400).json({ error: 'providerIds required' });
+    if (ids.length > 500) return res.status(400).json({ error: `manual selection max 500 (got ${ids.length}). Use smart-target for bigger sets.` });
+    const validObjectIds: mongoose.Types.ObjectId[] = [];
+    for (const id of ids) {
+      try { validObjectIds.push(new mongoose.Types.ObjectId(id)); } catch { /* skip invalid */ }
+    }
+    if (validObjectIds.length === 0) return res.status(400).json({ error: 'no valid ObjectIds' });
+    const c = col();
+    const count = await c.countDocuments({ _id: { $in: validObjectIds } });
+    const sample = await c.find(
+      { _id: { $in: validObjectIds.slice(0, 5) } },
+      { projection: { _id: 1, name: 1, category: 1, city: 1 } },
+    ).toArray();
+    return res.json({
+      kind, count, requestedCount: ids.length, validCount: validObjectIds.length,
+      sampleIds: sample.map(s => String(s._id)),
+      sample: sample.map(s => ({ _id: String(s._id), name: s.name, category: s.category, city: s.city })),
+    });
+  }
+  return res.status(400).json({ error: `kind must be 'smart-target' or 'manual', got '${kind}'` });
 });
 
 // ── Список indexов для оптимизации запросов ─────────────────────────────────

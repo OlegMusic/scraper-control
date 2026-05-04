@@ -282,6 +282,303 @@ Stats и Database страницы используют **smart-targets pattern*
 - `youtubeAbout.{country, joinedYear, subscriberCount}` — данные с /about страницы
 - `radarMeta.{hwkUrl, distanceKm, plz, contactPerson}` — handwerker-radar metadata
 
+## SEO Intelligence Pipeline (Phase 0 + A)
+
+**Цель:** keyword research для (category × city) которых ещё нет в BBITE Site Factory. scraper-control = research lab, BBITE = production.
+
+### Архитектура источников
+
+```
+БЕСПЛАТНО (без API token):
+  ✓ Google Autocomplete  (suggestqueries.google.com)
+  ✓ Bing Autocomplete    (api.bing.com/osjson.aspx)
+  ✓ YouTube Autocomplete (suggestqueries-clients6.youtube.com)
+  ✓ Amazon DE            (completion.amazon.de)
+  ✓ Heuristic volume через autocomplete-rank (грязный proxy для real volume)
+
+ПЛАТНО / API token:
+  ⏸ Google Ads API   (developer token нужен — заявка 1-7 дней через MCC)
+  ⏸ DataForSEO       ($5-50/мес, SERP analysis)
+  ⏸ GSC API          (бесплатно, только для своих доменов через Service Account)
+```
+
+### Файлы
+
+```
+server/src/
+├── seo-pipeline/
+│   ├── seedGenerator.ts        генерит seeds из providers (~10-15K)
+│   ├── googleAdsClient.ts      stub-fallback если token нет
+│   ├── dataForSeoClient.ts     SERP analysis
+│   ├── gscClient.ts            Service Account JWT (parity с BBITE)
+│   ├── opportunityScorer.ts    formula + Content Brief generator
+│   └── autocompleteScraper.ts  Google/Bing/YT/Amazon + heuristic volume
+└── routes/seo.ts               endpoints (/status, /coverage, /keywords, /brief, /research/*, /training/*)
+
+web/src/pages/
+├── SEO.tsx                     heatmap + keyword table + 6 pipeline buttons
+└── Database.tsx                provider modal SEO Brief + Director training feedback
+```
+
+### Mongo collections (новые)
+
+- `sc_keywords` — keyword × volume × difficulty × score × geo×category
+- `sc_keyword_seeds` — seeds для исследования (~1.6M генерируется)
+- `sc_seo_runs` — история pipeline runs
+- `sc_director_training` — пользовательские правки brief'ов → обучение Director'а через Qdrant
+
+### Endpoints
+
+```
+GET  /api/seo/status            current state + source configuration
+GET  /api/seo/coverage          сколько category × city проанализировано
+GET  /api/seo/keywords          top opportunities (?category=X&city=Y)
+GET  /api/seo/keyword/:id       single keyword detail
+GET  /api/seo/brief?providerId  Content Brief для BBITE Site Factory
+GET  /api/seo/heatmap           category × city × score grid
+POST /api/seo/research/seed                генерация seeds
+POST /api/seo/research/autocomplete        🆓 расширение через autocomplete
+POST /api/seo/research/estimate-volume     🆓 heuristic volume
+POST /api/seo/research/google-ads          💰 точный volume (нужен token)
+POST /api/seo/research/serp                💰 SERP via DataForSEO
+POST /api/seo/research/gsc                 GSC sync (свои сайты)
+POST /api/seo/rescore                       пересчёт opportunity scores
+POST /api/seo/feedback                      BBITE присылает GSC delta
+POST /api/seo/training/feedback             user правки brief'ов
+GET  /api/seo/training                      list user feedback
+```
+
+### Workflow для production
+
+```
+1. POST /api/seo/research/seed        → 1.6M seeds в sc_keyword_seeds
+2. POST /api/seo/research/autocomplete → extend через Google+Bing → keywords
+3. POST /api/seo/research/estimate-volume → heuristic volume
+4. (опц) POST /api/seo/research/serp  → DataForSEO для top-keys
+5. (опц) POST /api/seo/research/gsc   → свои данные позиций
+6. BBITE pulls GET /api/seo/brief?providerId=X при генерации /experte/{slug}
+7. BBITE присылает POST /api/seo/feedback с GSC delta после публикации
+8. Director видит "что работает" через /api/director/chat tools
+```
+
+### E-E-A-T compliance (важно из BBITE rules)
+
+- Briefs дают только контентный план — не финальный текст
+- BBITE применяет AI-generation с human review (expert correction loop)
+- Local signals (PLZ + HWK chamber) обязательны в каждом brief — не doorway
+- Никаких self-serving reviews в Schema.org
+
+## SEO Bulk + Drill-down + RAG-обучение (Slice 1, 2026-05-03)
+
+Расширение Phase 0/A: pick selection из /database → bulk SEO research job → click any
+provider → видишь весь SEO срез → Director SEO-агенты учатся на feedback'е через RAG.
+
+### Selection layer (/database)
+
+- Чекбокс на каждой строке + «выбрать все на странице» (cap 500 manual).
+- Sticky toolbar внизу: «Выбрано: N → 🎯 Run SEO research».
+- Кнопка «🎯 Run SEO research на всю выборку» когда активен smart-target (для 100K).
+- Confirm modal вызывает `POST /api/database/selection/resolve` для count + sample, потом `POST /api/seo-jobs`.
+
+### Bulk job worker
+
+`server/src/seo-pipeline/seoJobWorker.ts` + `routes/seo-jobs.ts`:
+- Mongo `sc_seo_jobs` collection — каждое описание выборки + статус + `cursorIndex`.
+- Cron tick `*/15 * * * * *` (Europe/Berlin) — атомарно резервирует pending → running.
+- Batch=25 провайдеров за тик; на каждом вызывает `generateContentBrief(providerId)`. Для `pipeline:'full-research'` сначала делается dedupe (category, city) → autocomplete для пар без свежих keywords (<30 дней).
+- Rate limit: token bucket 60/min (`rateLimiter.ts`). Job >1000 → автоматически `useProxy: true` (IPRoyal residential через `proxy.ts`).
+- Restart-safe: zombie reaper в boot hook возвращает `running` без heartbeat>5min обратно в `pending`.
+- Socket.io: `seo:job:start`, `seo:job:progress`, `seo:job:end` — `BulkSeoJobsPanel` слушает.
+
+Endpoints:
+```
+POST /api/seo-jobs                 {selection:{kind,targetId?|providerIds?}, pipeline}
+GET  /api/seo-jobs                 ?status=running
+GET  /api/seo-jobs/:id
+POST /api/seo-jobs/:id/{pause,resume,cancel}
+```
+
+### Per-provider drill-down
+
+`GET /api/seo/provider/:id/full` — composit: brief + keywordCluster (top-50) + trainingRecords.
+В Database modal — показывается ниже SEO Brief: cluster table + training history.
+
+### RAG-обучение SEO-агентов
+
+```
+POST /api/seo/training/feedback
+   ↓ (PII sanitize: email/phone → [redacted])
+   ↓ Mongo insert (DirectorTraining)
+   ↓ setImmediate
+Gemini gemini-embedding-001 (768d, Matryoshka truncated, normalized)
+   ↓
+Qdrant collection director_training_seo_v1
+   ↓ (при consult_agent)
+retrieveSimilar(question, topK=4, ratingGte=1)
+   ↓ (только для seo-strategist | serp-analyst | local-signals-expert)
+augmentedSystemPrompt += "## Verified human feedback patterns:\n..."
+```
+
+Fallback: Qdrant down или Gemini quota out → `[]` → base systemPrompt. Никогда не валит ответ агента.
+Nightly cron `0 3 * * *` пере-embed-ит записи у которых `embeddingId: null` (synchronous embed упал).
+
+### 3 новых SEO-агента в `agents.ts`
+
+- `seo-strategist` 🎯 — main + supporting cluster, E-E-A-T, BBITE Site Factory
+- `serp-analyst` 🔍 — competitor SERP, content gaps, difficulty
+- `local-signals-expert` 📍 — PLZ/HWK/Local Pack/Schema.org
+
+Каждый получает RAG-augmented systemPrompt при invocation.
+
+### DRY компонент
+
+`web/src/components/TrainingFeedbackPanel.tsx` — единый компонент для feedback во всех местах (Database modal, SEO keyword detail). Поддерживает kinds: `brief-edit | keyword-feedback | verdict-correction | recommendation-priority | agent-output`.
+
+### Verification
+
+```bash
+# Selection resolver
+curl -X POST http://127.0.0.1:3100/api/database/selection/resolve \
+  -d '{"kind":"smart-target","targetId":"audit-critical"}'  # → {count, sample}
+
+# Create job
+curl -X POST http://127.0.0.1:3100/api/seo-jobs \
+  -d '{"selection":{"kind":"smart-target","targetId":"audit-critical"},"pipeline":"brief-only"}'
+# → {jobId, total, useProxy:true}  (>1000 → IPRoyal)
+
+# Drill-down
+curl http://127.0.0.1:3100/api/seo/provider/<id>/full
+# → {brief, keywordCluster, trainingRecords, stats}
+
+# Embed pipeline
+curl -X POST http://127.0.0.1:3100/api/seo/training/feedback \
+  -d '{"kind":"keyword-feedback","category":"Friseur","city":"Berlin","userComment":"...","rating":2}'
+# → {ok, id} → wait 3s → check points_count via Qdrant
+curl http://127.0.0.1:6333/collections/director_training_seo_v1
+```
+
+### Iteration 2 (deferred)
+
+- `/agents` control panel (per-agent stats: invocations, accept-ratio, recent feedback)
+- Promote-to-prompt с версионированием agent.basePrompt (data-driven `sc_agents` collection)
+- Cluster-and-propose систем-промпт diff (нужен ≥500 records на агента)
+- Score history + GSC trend charts в drill-down
+- Scoped `<SeoChat>` на /seo (сейчас всё через GlobalChat → Director)
+- Materialized `sc_provider_selections` для долгих job'ов (>часа)
+
+## SEO Slice 2: Junk Filter + Volume Heuristic + Semantic Clustering + LLM Overseer (2026-05-03)
+
+После Slice 1 (orchestration) сделан Slice 2 — **качество семантики**. Pipeline в `seoJobWorker.ensureAutocompleteCoverage` теперь:
+
+```
+expandSeeds (Google+Bing)              → ~30 raw kw per (term, city)
+  ↓
+junkFilter.filterJunk()                → rules + LLM borderline cleanup
+  ↓ ~70-95% kept
+estimateVolumeByAutocomplete()         → fake avgMonthlySearches (±60% точность)
+  ↓
+computeScore()                         → opportunityScore (volume × dif × city × comp)
+  ↓
+bulkWrite в sc_keywords
+  ↓
+clusterKeywords()                      → Gemini embeddings + agglomerative
+  ↓ N clusters per pair
+classifyCluster()                      → service-page/pricing/faq/job-page/general
+  ↓
+reviewAndPersistClustersForPair()      → Haiku (или Claude CLI bridge fallback)
+                                          → qualityScore + suggestedName +
+                                          → refinedPageType + flags + notes
+  ↓
+sc_keyword_clusters (с llmReview)
+```
+
+### Новые модули (`server/src/seo-pipeline/`)
+
+| Module | Назначение |
+|---|---|
+| `junkFilter.ts` | Rule blacklist (CAR_BRANDS, NON_HANDWERKER_BRANDS, AUTOMOTIVE_MASS, GENERIC_NOISE, JOB_PATTERNS) + Haiku batch для borderline. Detect automotive provider context — для Autolackiererei/KFZ-провайдеров CAR_BRANDS не filter'им (могут конкурировать). |
+| `keywordClusterer.ts` | Gemini text-embedding-001 (768d, normalized) → threshold-based agglomerative (cosine ≥ 0.75, env var SEO_CLUSTER_THRESHOLD). Single-pass O(N×K). Fallback на 1 cluster при quota out. |
+| `pageTypeClassifier.ts` | Heuristic regex для majority voting: pricing (preis/kosten/tarif), faq (was/wie/wo/?), job-page (jobs/ausbildung/gehalt). Default = service-page. |
+| `llmOverseer.ts` | Haiku 4.5 batch (5 clusters/call) → JSON {qualityScore 0-10, suggestedName, refinedPageType, flags, notes}. Fallback: Claude CLI subprocess через `claudePrompt()` если нет ANTHROPIC_API_KEY. Идемпотентен (skip уже-просмотренных по `llmReview.reviewedAt`). |
+| `serpScraper.ts` | UULE encoding для geo-targeting + parser regex + difficulty heuristic. **Не активен** — Google.de требует JS, pure-HTTP scrape блокирован. Reuse в Slice 3 через puppeteer-fleet. |
+
+### Mongo collection `sc_keyword_clusters`
+
+```ts
+{
+  category, city, clusterName,
+  headKeyword: { keyword, volume, score },
+  supportingKeywords: [{ keyword, volume, score, similarity }],
+  volumeTotal, difficultyAvg,
+  pageType, centroidVector: [768d], size,
+  generatedAt,
+  llmReview: {                              // ← AI quality-gate
+    qualityScore: 0-10,
+    suggestedName,                          // human-readable, e.g. "Maler-Preise Kassel"
+    refinedPageType,                        // LLM может пере-классифицировать
+    flags: ['mixed-intent', 'spam', ...],
+    notes,                                  // 1-line German explanation
+    reviewedAt,
+  },
+}
+```
+
+Compound indexes: `{category:1, city:1, generatedAt:-1}`, unique `{category:1, city:1, clusterName:1}`.
+
+### Новые endpoints
+
+```
+GET  /api/seo/clusters?providerId=...|category=...&city=...&pageType=  → {clusters[], total}
+POST /api/seo/clusters/llm-review  {category, city}                     → {ok, reviewed, batches}
+```
+
+`/api/seo/provider/:id/full` теперь содержит `clusters[]` с `llmReview` для каждого.
+
+### Backfill script: `scripts/recluster-existing.ts`
+
+Прогоняет накопленные `sc_keywords` через cluster pipeline без повторного autocomplete:
+
+```bash
+# Все pairs
+npx tsx scripts/recluster-existing.ts --min-keywords 5
+
+# Конкретная пара
+npx tsx scripts/recluster-existing.ts --category 'maler und lackierer' --city Kassel
+
+# С очисткой junk (deletes rejected keywords + clusters from sc_keyword_clusters)
+npx tsx scripts/recluster-existing.ts --clean-junk
+
+# С полным циклом (filter + recluster + LLM review)
+npx tsx scripts/recluster-existing.ts --clean-junk --llm-review
+```
+
+### Verification (real test, 2026-05-03)
+
+Test провайдер `Autolackiererei Kristall GmbH (Kassel)`:
+- HWK Gewerke: ✓ `Maler und Lackierer` + `Karosserie- und Fahrzeugbauer`
+- Cluster для Maler×Kassel:
+  - clusterName (raw) = «maler und lackierer ausbildung kassel» (head по volume×score)
+  - llmReview.suggestedName = «Maler und Lackierer Kassel - Allgemein»
+  - llmReview.qualityScore = 4/10 (mixed-intent flag)
+  - llmReview.refinedPageType = `general` (LLM сменил с `service-page`)
+  - llmReview.notes = «Cluster vermischt lokale Suche in Kassel mit Ausbildung, Jobs, Innung und mehreren fremden Städten (Düsseldorf, Karlsruhe, Münster, München).»
+
+UI рендерит:
+- Желтую border (flag `mixed-intent`)
+- Badge `🤖 4/10` (низкое качество)
+- Заголовок `suggestedName` вместо raw clusterName
+- Note внизу с объяснением
+
+### LLM availability
+
+| API key set | Claude CLI | Поведение llmOverseer |
+|---|---|---|
+| ✓ | — | Anthropic SDK, Haiku 4.5 batch |
+| — | ✓ | Claude CLI subprocess fallback (медленнее, но free через subscription) |
+| — | — | No-op, кластеры остаются без `llmReview` |
+
+junkFilter LLM borderline review также fallback'ится. Pipeline никогда не валит ответ.
+
 ## Roadmap / TODO
 
 - [ ] **Phase B: Management levers** — кнопки "запустить audit для smart-target X" из UI Database

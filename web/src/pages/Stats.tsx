@@ -1,5 +1,24 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { FaInstagram, FaFacebook, FaYoutube, FaTiktok, FaTelegram, FaLinkedin, FaXing, FaWhatsapp } from 'react-icons/fa';
+
+function SocialIcons({ socials }: { socials?: Record<string, string> }) {
+  if (!socials) return null;
+  const stop = (e: React.MouseEvent) => e.stopPropagation();
+  const cls = 'w-4 h-4 inline-block transition-transform hover:scale-110';
+  return (
+    <div className="flex items-center gap-2">
+      {socials.instagram && <a href={socials.instagram} target="_blank" rel="noopener" onClick={stop} title="Instagram" className="text-pink-400 hover:text-pink-300"><FaInstagram className={cls} /></a>}
+      {socials.facebook && <a href={socials.facebook} target="_blank" rel="noopener" onClick={stop} title="Facebook" className="text-blue-400 hover:text-blue-300"><FaFacebook className={cls} /></a>}
+      {socials.youtube && <a href={socials.youtube} target="_blank" rel="noopener" onClick={stop} title="YouTube" className="text-red-400 hover:text-red-300"><FaYoutube className={cls} /></a>}
+      {socials.tiktok && <a href={socials.tiktok} target="_blank" rel="noopener" onClick={stop} title="TikTok" className="text-slate-200 hover:text-white"><FaTiktok className={cls} /></a>}
+      {socials.telegram && <a href={socials.telegram} target="_blank" rel="noopener" onClick={stop} title="Telegram" className="text-sky-400 hover:text-sky-300"><FaTelegram className={cls} /></a>}
+      {socials.linkedin && <a href={socials.linkedin} target="_blank" rel="noopener" onClick={stop} title="LinkedIn" className="text-blue-500 hover:text-blue-400"><FaLinkedin className={cls} /></a>}
+      {socials.xing && <a href={socials.xing} target="_blank" rel="noopener" onClick={stop} title="Xing" className="text-emerald-500 hover:text-emerald-400"><FaXing className={cls} /></a>}
+      {socials.whatsapp && <a href={socials.whatsapp} target="_blank" rel="noopener" onClick={stop} title="WhatsApp" className="text-green-400 hover:text-green-300"><FaWhatsapp className={cls} /></a>}
+    </div>
+  );
+}
 
 interface Provider {
   _id: string;
@@ -59,11 +78,23 @@ const COLORS: Record<string, string> = {
   slate:   'from-slate-500/20 to-slate-500/5 border-slate-400/20 hover:from-slate-500/35',
 };
 
+interface EnrichmentLoop {
+  id: string;
+  label: string;
+  total: number;
+  last5: number;
+  last30: number;
+  last60: number;
+  ratePerMin: number;
+  status: 'active' | 'idle' | 'dormant';
+}
+
 export function Stats() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [sources, setSources] = useState<SourceRow[]>([]);
   const [cities, setCities] = useState<SourceRow[]>([]);
   const [gaps, setGaps] = useState<any>(null);
+  const [enrichmentLoops, setEnrichmentLoops] = useState<EnrichmentLoop[]>([]);
 
   // Drill-down state
   const [drillSlice, setDrillSlice] = useState<SliceDef | null>(null);
@@ -83,6 +114,19 @@ export function Stats() {
       ]);
       setOverview(o.data); setSources(s.data); setCities(c.data); setGaps(g.data);
     })();
+  }, []);
+
+  // Live enrichment widget — refresh каждые 10s
+  useEffect(() => {
+    const fetchRate = async () => {
+      try {
+        const r = await api.get<{ loops: EnrichmentLoop[] }>('/stats/enrichment-rate');
+        setEnrichmentLoops(r.data.loops || []);
+      } catch { /* silent */ }
+    };
+    fetchRate();
+    const i = setInterval(fetchRate, 10000);
+    return () => clearInterval(i);
   }, []);
 
   // Custom drill через /database/providers (поддерживает простые city/source фильтры)
@@ -135,6 +179,60 @@ export function Stats() {
 
   return (
     <div className="space-y-6">
+      {/* LIVE ENRICHMENT DASHBOARD */}
+      {enrichmentLoops.length > 0 && (
+        <div>
+          <div className="flex items-baseline justify-between mb-3">
+            <h3 className="text-xs uppercase tracking-wider text-slate-500">⚡ Live enrichment loops</h3>
+            <span className="text-[10px] text-slate-500">refresh каждые 10s · last 5min rate</span>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {enrichmentLoops.map(l => {
+              const statusColor = l.status === 'active'
+                ? 'border-emerald-500/40 bg-emerald-500/5'
+                : l.status === 'idle'
+                ? 'border-amber-500/30 bg-amber-500/5'
+                : 'border-slate-700/40 bg-slate-900/40 opacity-60';
+              const dotColor = l.status === 'active' ? 'bg-emerald-400 animate-pulse' : l.status === 'idle' ? 'bg-amber-400' : 'bg-slate-600';
+              return (
+                <div key={l.id} className={`rounded-xl border p-3 ${statusColor}`}>
+                  <div className="flex items-baseline gap-2">
+                    <span className={`w-2 h-2 rounded-full ${dotColor}`}></span>
+                    <span className="font-medium text-sm">{l.label}</span>
+                    <span className="ml-auto text-[10px] text-slate-500 uppercase">{l.status}</span>
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <div className="text-slate-500 text-[10px]">total</div>
+                      <div className="font-mono">{l.total.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500 text-[10px]">5min</div>
+                      <div className="font-mono text-emerald-300">+{l.last5.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500 text-[10px]">30min</div>
+                      <div className="font-mono">+{l.last30.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500 text-[10px]">rate/min</div>
+                      <div className="font-mono">{l.ratePerMin.toFixed(1)}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {/* Aggregate */}
+          <div className="mt-3 text-xs text-slate-400 text-right">
+            суммарно last 5min: <b className="text-emerald-300">+{enrichmentLoops.reduce((s,l)=>s+l.last5,0).toLocaleString()}</b>
+            {' · '}
+            ≈ <b>{(enrichmentLoops.reduce((s,l)=>s+l.ratePerMin,0)).toFixed(0)}/min</b> {' '}
+            всеми loops вместе
+          </div>
+        </div>
+      )}
+
       {/* Main slices */}
       <div>
         <h3 className="text-xs uppercase tracking-wider text-slate-500 mb-3">Покрытие</h3>
@@ -256,12 +354,7 @@ export function Stats() {
                             </a>
                           )}
                         </td>
-                        <td className="px-4 py-2.5 text-base space-x-1">
-                          {p.socials?.instagram && <a href={p.socials.instagram} target="_blank" title="Instagram">📷</a>}
-                          {p.socials?.facebook && <a href={p.socials.facebook} target="_blank" title="Facebook">📘</a>}
-                          {p.socials?.youtube && <a href={p.socials.youtube} target="_blank" title="YouTube">📺</a>}
-                          {p.socials?.tiktok && <a href={p.socials.tiktok} target="_blank" title="TikTok">🎵</a>}
-                        </td>
+                        <td className="px-4 py-2.5"><SocialIcons socials={p.socials} /></td>
                         <td className="px-4 py-2.5 text-xs">
                           {p.audit?.overallNeed && (
                             <span className={`px-2 py-0.5 rounded-full ${

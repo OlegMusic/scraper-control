@@ -8,6 +8,7 @@ import { scheduleJob, unscheduleJob } from '../scheduler.js';
 import cron from 'node-cron';
 import { AGENTS, getAgent } from '../agents.js';
 import { checkClaude, claudePrompt } from '../claude-bridge.js';
+import { retrieveSimilar } from '../seo-pipeline/qdrantTraining.js';
 
 const r = Router();
 
@@ -208,11 +209,41 @@ async function executeTool(name: string, input: any): Promise<any> {
       const agent = getAgent(input.agentId);
       if (!agent) return { error: `agent not found: ${input.agentId}` };
       if (!config.keys.anthropic) return { error: 'ANTHROPIC_API_KEY missing' };
+
+      // RAG: ищем top-K похожих past feedback'ов (positive только) и инжектим в systemPrompt
+      // как "Verified human feedback patterns". Для не-SEO агентов вернёт [] — fallback OK.
+      // Любая ошибка Qdrant/Gemini → no-op, базовый prompt используется.
+      const seoAgents = new Set(['seo-strategist', 'serp-analyst', 'local-signals-expert']);
+      let augmentedSystem = agent.systemPrompt;
+      let ragHits: any[] = [];
+      let ragStatus: 'ok' | 'empty' | 'unavailable' = 'unavailable';
+      if (seoAgents.has(agent.id)) {
+        try {
+          ragHits = await retrieveSimilar({
+            question: input.question,
+            context: input.context,
+            topK: 4,
+            ratingGte: 1,
+          });
+          if (ragHits.length > 0) {
+            const block = ragHits.map((h, i) =>
+              `${i + 1}. [${h.kind}, rating ${h.rating}${h.category ? `, ${h.category}` : ''}${h.city ? `/${h.city}` : ''}] ${h.userComment || '(no comment)'}`
+            ).join('\n');
+            augmentedSystem = `${agent.systemPrompt}\n\n## Verified human feedback patterns (most relevant first):\n${block}\n\nTreat these as ground-truth user preferences. When the user's question overlaps a pattern, follow the pattern. Conflict → trust higher rating / more recent.`;
+            ragStatus = 'ok';
+          } else {
+            ragStatus = 'empty';
+          }
+        } catch (e: any) {
+          console.warn('[director] RAG retrieve failed, using base prompt:', e.message);
+        }
+      }
+
       const sub = new Anthropic({ apiKey: config.keys.anthropic });
       const subResp = await sub.messages.create({
-        model: 'claude-haiku-4-5-20251001', // дешевле + быстрее для специалистов
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 1024,
-        system: agent.systemPrompt,
+        system: augmentedSystem,
         messages: [{
           role: 'user',
           content: `Вопрос: ${input.question}\n\n${input.context ? 'Контекст:\n' + input.context : ''}`,
@@ -220,7 +251,12 @@ async function executeTool(name: string, input: any): Promise<any> {
       });
       const advice = subResp.content
         .filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n');
-      return { agent: agent.name, advice };
+      return {
+        agent: agent.name,
+        advice,
+        ragStatus,
+        ragHitsUsed: ragHits.length,
+      };
     }
     default:
       return { error: `unknown tool: ${name}` };

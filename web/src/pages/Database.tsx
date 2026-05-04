@@ -1,5 +1,25 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { FaInstagram, FaFacebook, FaYoutube, FaTiktok, FaTelegram, FaLinkedin, FaXing, FaWhatsapp } from 'react-icons/fa';
+import { TrainingFeedbackPanel } from '../components/TrainingFeedbackPanel';
+
+function SocialIcons({ socials }: { socials?: Record<string, string> }) {
+  if (!socials) return null;
+  const stop = (e: React.MouseEvent) => e.stopPropagation();
+  const cls = 'w-4 h-4 inline-block transition-transform hover:scale-110';
+  return (
+    <div className="flex items-center gap-2">
+      {socials.instagram && <a href={socials.instagram} target="_blank" rel="noopener" onClick={stop} title="Instagram" className="text-pink-400 hover:text-pink-300"><FaInstagram className={cls} /></a>}
+      {socials.facebook && <a href={socials.facebook} target="_blank" rel="noopener" onClick={stop} title="Facebook" className="text-blue-400 hover:text-blue-300"><FaFacebook className={cls} /></a>}
+      {socials.youtube && <a href={socials.youtube} target="_blank" rel="noopener" onClick={stop} title="YouTube" className="text-red-400 hover:text-red-300"><FaYoutube className={cls} /></a>}
+      {socials.tiktok && <a href={socials.tiktok} target="_blank" rel="noopener" onClick={stop} title="TikTok" className="text-slate-200 hover:text-white"><FaTiktok className={cls} /></a>}
+      {socials.telegram && <a href={socials.telegram} target="_blank" rel="noopener" onClick={stop} title="Telegram" className="text-sky-400 hover:text-sky-300"><FaTelegram className={cls} /></a>}
+      {socials.linkedin && <a href={socials.linkedin} target="_blank" rel="noopener" onClick={stop} title="LinkedIn" className="text-blue-500 hover:text-blue-400"><FaLinkedin className={cls} /></a>}
+      {socials.xing && <a href={socials.xing} target="_blank" rel="noopener" onClick={stop} title="Xing" className="text-emerald-500 hover:text-emerald-400"><FaXing className={cls} /></a>}
+      {socials.whatsapp && <a href={socials.whatsapp} target="_blank" rel="noopener" onClick={stop} title="WhatsApp" className="text-green-400 hover:text-green-300"><FaWhatsapp className={cls} /></a>}
+    </div>
+  );
+}
 
 interface Provider {
   _id: string;
@@ -98,6 +118,130 @@ export function Database() {
   const [loading, setLoading] = useState(false);
   const [smartTargets, setSmartTargets] = useState<SmartTarget[]>([]);
   const [activeTarget, setActiveTarget] = useState<string | null>(null);
+
+  // Bulk selection — manual checkboxes (cap 500). Параллельно с modal-detail `selected`.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkConfirm, setBulkConfirm] = useState<null | {
+    kind: 'manual' | 'smart-target';
+    targetId?: string;
+    count?: number;
+    label?: string;
+    description?: string;
+    sample?: Array<{ _id: string; name?: string; category?: string; city?: string }>;
+    pipeline: 'brief-only' | 'full-research';
+    submitting?: boolean;
+  }>(null);
+
+  function toggleSelect(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else if (next.size < 500) next.add(id);
+      else alert('Manual selection cap = 500. Для больших — используй smart-target кнопку.');
+      return next;
+    });
+  }
+  function selectAllOnPage() {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      for (const p of providers) {
+        if (next.size >= 500) break;
+        next.add(p._id);
+      }
+      return next;
+    });
+  }
+  function clearSelection() { setSelectedIds(new Set()); }
+
+  async function openBulkConfirmManual() {
+    if (selectedIds.size === 0) return;
+    const ids = Array.from(selectedIds);
+    setBulkConfirm({ kind: 'manual', count: ids.length, pipeline: 'brief-only' });
+    try {
+      const r = await api.post('/database/selection/resolve', { kind: 'manual', providerIds: ids });
+      setBulkConfirm(b => b ? { ...b, count: r.data.count, sample: r.data.sample } : b);
+    } catch (e: any) {
+      alert(`Ошибка resolve: ${e.response?.data?.error || e.message}`);
+      setBulkConfirm(null);
+    }
+  }
+  async function openBulkConfirmTarget() {
+    if (!activeTarget) return;
+    setBulkConfirm({ kind: 'smart-target', targetId: activeTarget, pipeline: 'brief-only' });
+    try {
+      const r = await api.post('/database/selection/resolve', { kind: 'smart-target', targetId: activeTarget });
+      setBulkConfirm(b => b ? { ...b, count: r.data.count, label: r.data.label, description: r.data.description, sample: r.data.sample } : b);
+    } catch (e: any) {
+      alert(`Ошибка resolve: ${e.response?.data?.error || e.message}`);
+      setBulkConfirm(null);
+    }
+  }
+  async function submitBulkJob() {
+    if (!bulkConfirm || bulkConfirm.submitting) return;
+    setBulkConfirm(b => b ? { ...b, submitting: true } : b);
+    try {
+      const selection = bulkConfirm.kind === 'manual'
+        ? { kind: 'manual', providerIds: Array.from(selectedIds) }
+        : { kind: 'smart-target', targetId: bulkConfirm.targetId };
+      const r = await api.post('/seo-jobs', {
+        selection,
+        pipeline: bulkConfirm.pipeline,
+        label: bulkConfirm.label || (bulkConfirm.kind === 'manual'
+          ? `Manual ${selectedIds.size} провайдеров`
+          : `Target: ${bulkConfirm.targetId}`),
+      });
+      alert(`Job создан: ${r.data.jobId}\nTotal: ${r.data.total}\nProxy: ${r.data.useProxy ? 'IPRoyal' : 'нет'}\n\nСмотри прогресс на странице /seo`);
+      setBulkConfirm(null);
+      if (bulkConfirm.kind === 'manual') clearSelection();
+    } catch (e: any) {
+      alert(`Ошибка: ${e.response?.data?.error || e.message}`);
+      setBulkConfirm(b => b ? { ...b, submitting: false } : b);
+    }
+  }
+
+  // SEO brief в provider modal — теперь грузим /full (brief + cluster + training)
+  const [brief, setBrief] = useState<any | null>(null);
+  const [keywordCluster, setKeywordCluster] = useState<any[]>([]);
+  const [candidateKeywords, setCandidateKeywords] = useState<any[]>([]);
+  const [candidateVotes, setCandidateVotes] = useState<Record<string, 'up' | 'down'>>({});
+  const [trainingRecords, setTrainingRecords] = useState<any[]>([]);
+  const [handwerkServices, setHandwerkServices] = useState<any | null>(null);
+  const [semanticClusters, setSemanticClusters] = useState<any[]>([]);
+  const [briefLoading, setBriefLoading] = useState(false);
+
+  async function loadBrief(providerId: string) {
+    setBriefLoading(true);
+    setBrief(null); setKeywordCluster([]); setTrainingRecords([]); setCandidateKeywords([]); setCandidateVotes({}); setHandwerkServices(null); setSemanticClusters([]);
+    try {
+      const r = await api.get(`/seo/provider/${providerId}/full`);
+      setBrief(r.data.brief);
+      setKeywordCluster(r.data.keywordCluster || []);
+      setCandidateKeywords(r.data.candidateKeywords || []);
+      setTrainingRecords(r.data.trainingRecords || []);
+      setHandwerkServices(r.data.handwerkServices || null);
+      setSemanticClusters(r.data.clusters || []);
+    } catch (e: any) {
+      alert('Brief недоступен. Сначала запусти SEO pipeline (Seeds → autocomplete → estimate-volume).');
+    } finally { setBriefLoading(false); }
+  }
+  async function voteCandidate(c: any, vote: 'up' | 'down') {
+    if (!brief) return;
+    setCandidateVotes(prev => ({ ...prev, [c.text]: vote }));
+    try {
+      await api.post('/seo/training/feedback', {
+        kind: 'keyword-feedback',
+        providerId: brief.providerId,
+        category: brief.category,
+        city: brief.city,
+        originalData: { keyword: c.text, source: c.source, weight: c.weight },
+        userComment: vote === 'up' ? `Кандидат "${c.text}" из ${c.source} — годится для категории ${brief.category}` : `Кандидат "${c.text}" — мусор, не использовать`,
+        rating: vote === 'up' ? 2 : -2,
+      });
+    } catch (e: any) {
+      setCandidateVotes(prev => { const n = { ...prev }; delete n[c.text]; return n; });
+      alert(`Ошибка: ${e.response?.data?.error || e.message}`);
+    }
+  }
 
   // DB chat
   const [chatOpen, setChatOpen] = useState(false);
@@ -296,7 +440,13 @@ export function Database() {
         <div className="flex items-baseline justify-between mb-2">
           <h3 className="text-xs uppercase tracking-wider text-slate-500">🎯 Умный отбор контактов</h3>
           {activeTarget && (
-            <button onClick={clearTarget} className="text-xs text-slate-400 hover:text-white">× сбросить targets</button>
+            <div className="flex items-center gap-2">
+              <button onClick={openBulkConfirmTarget}
+                className="text-xs px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white font-medium">
+                🎯 Run SEO research на всю выборку ({total.toLocaleString()})
+              </button>
+              <button onClick={clearTarget} className="text-xs text-slate-400 hover:text-white">× сбросить</button>
+            </div>
           )}
         </div>
         <div className="grid grid-cols-3 gap-2">
@@ -369,6 +519,21 @@ export function Database() {
           <table className="w-full text-xs">
             <thead className="bg-slate-900/60 sticky top-0">
               <tr className="text-left text-slate-400">
+                <th className="px-2 py-2 w-8">
+                  <input
+                    type="checkbox"
+                    checked={providers.length > 0 && providers.every(p => selectedIds.has(p._id))}
+                    onChange={e => {
+                      if (e.target.checked) selectAllOnPage();
+                      else setSelectedIds(prev => {
+                        const next = new Set(prev);
+                        for (const p of providers) next.delete(p._id);
+                        return next;
+                      });
+                    }}
+                    title="Выбрать всех на этой странице"
+                  />
+                </th>
                 <th className="px-3 py-2">Имя</th>
                 <th className="px-3 py-2">Город / Категория</th>
                 <th className="px-3 py-2">Verdict</th>
@@ -382,7 +547,15 @@ export function Database() {
             <tbody>
               {providers.map(p => (
                 <tr key={p._id}
-                  className="border-t border-slate-700/30 hover:bg-blue-500/5">
+                  className={`border-t border-slate-700/30 hover:bg-blue-500/5 ${selectedIds.has(p._id) ? 'bg-blue-500/10' : ''}`}>
+                  <td className="px-2 py-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(p._id)}
+                      onChange={() => toggleSelect(p._id)}
+                      onClick={e => e.stopPropagation()}
+                    />
+                  </td>
                   <td className="px-3 py-2 font-medium cursor-pointer" onClick={() => setSelected(p)}>
                     {p.name?.slice(0, 60)}
                   </td>
@@ -403,12 +576,7 @@ export function Database() {
                     {p.phone && <span title={p.phone}>📞</span>}
                     {p.email?.[0] && <a href={`mailto:${p.email[0]}`} onClick={e => e.stopPropagation()} title={p.email[0]} className="ml-1">✉</a>}
                   </td>
-                  <td className="px-3 py-2">
-                    {p.socials?.instagram && <a href={p.socials.instagram} target="_blank" onClick={e => e.stopPropagation()} title="Instagram">📷</a>}
-                    {p.socials?.facebook && <a href={p.socials.facebook} target="_blank" onClick={e => e.stopPropagation()} title="Facebook">📘</a>}
-                    {p.socials?.youtube && <a href={p.socials.youtube} target="_blank" onClick={e => e.stopPropagation()} title="YouTube">📺</a>}
-                    {p.socials?.tiktok && <a href={p.socials.tiktok} target="_blank" onClick={e => e.stopPropagation()} title="TikTok">🎵</a>}
-                  </td>
+                  <td className="px-3 py-2"><SocialIcons socials={p.socials} /></td>
                   <td className="px-3 py-2 text-slate-400">
                     {p.youtubePublishedAt ? new Date(p.youtubePublishedAt).getFullYear() : ''}
                   </td>
@@ -508,6 +676,379 @@ export function Database() {
               <div className="text-xs text-slate-500 mt-3">
                 Sources: {selected.externalSources?.join(', ')}
               </div>
+
+              {/* SEO BRIEF SECTION */}
+              <div className="mt-4 pt-4 border-t border-white/10">
+                <button onClick={() => loadBrief(selected._id)}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-sm font-medium">
+                  🎯 SEO Brief / семантика для этого провайдера
+                </button>
+                {briefLoading && <div className="mt-3 text-slate-400 text-sm">Готовлю brief... (если HWK не cached — fetch ~2-5s)</div>}
+                {brief && (
+                  <div className="mt-3 space-y-3">
+                    {/* HWK GEWERKE — юридически зарегистрированные виды услуг */}
+                    {handwerkServices && (
+                      <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3">
+                        <div className="flex items-baseline justify-between mb-2">
+                          <span className="text-xs uppercase text-emerald-300 font-semibold">📋 Виды услуг (HWK Kammer)</span>
+                          <span className="text-[10px] text-slate-500">
+                            {handwerkServices.source === 'hwk-odav' && '✓ из Handwerksrolle'}
+                            {handwerkServices.source === 'hwk-other' && '⚠ структура не распознана'}
+                            {handwerkServices.source === 'hwk-failed' && '❌ HWK fetch не удался'}
+                            {handwerkServices.scannedAt && ` · ${new Date(handwerkServices.scannedAt).toLocaleDateString('ru')}`}
+                          </span>
+                        </div>
+                        {handwerkServices.items?.length > 0 ? (
+                          <>
+                            <div className="flex flex-wrap gap-1.5 mb-1">
+                              {handwerkServices.items.map((g: string) => (
+                                <span key={g} className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-200 text-sm border border-emerald-500/40 font-medium">
+                                  {g}
+                                </span>
+                              ))}
+                            </div>
+                            <div className="text-[11px] text-slate-400 mt-1.5">
+                              Это primary SEO seed — ключевая роль для (вид услуг × город). Используется в keyword research и прокидывается в Director.
+                            </div>
+                            {handwerkServices.rawTitle && (
+                              <div className="text-[10px] text-slate-500 mt-1">HWK Betrieb: {handwerkServices.rawTitle}</div>
+                            )}
+                          </>
+                        ) : (
+                          <div className="text-xs text-amber-300">
+                            Gewerke не распознаны на HWK странице. Возможно нестандартная структура — проверь вручную: <a href={handwerkServices.sourceUrl} target="_blank" className="text-blue-300 underline">{handwerkServices.sourceUrl}</a>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="rounded-lg border border-purple-500/30 bg-purple-500/5 p-3">
+                      <div className="text-xs uppercase text-purple-300 mb-2">🎯 Main Keyword</div>
+                      {brief.mainKeyword ? (
+                        <>
+                          <div className="font-mono text-base">{brief.mainKeyword.keyword}</div>
+                          <div className="text-xs text-slate-400 mt-1">
+                            volume: {brief.mainKeyword.volume?.toLocaleString() || '—'} ·
+                            difficulty: {brief.mainKeyword.difficulty || '—'} ·
+                            score: <b className="text-purple-300">{brief.mainKeyword.score?.toFixed(1)}</b>
+                          </div>
+                        </>
+                      ) : <div className="text-xs text-amber-300">Нет global keywords для (категория, город) — pipeline ещё не прогнал autocomplete для этой пары. Ниже кандидаты из данных провайдера.</div>}
+                    </div>
+
+                    {/* CANDIDATE KEYWORDS — извлечены из websiteText/socialContent/youtubeAbout/videos */}
+                    {candidateKeywords.length > 0 && (
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                        <div className="flex items-baseline justify-between mb-2">
+                          <span className="text-xs uppercase text-amber-300">🔍 Кандидаты из данных провайдера ({candidateKeywords.length})</span>
+                          <span className="text-[10px] text-slate-500">отметь годные/мусор → Director учится</span>
+                        </div>
+                        <div className="space-y-1">
+                          {candidateKeywords.map((c: any) => {
+                            const vote = candidateVotes[c.text];
+                            return (
+                              <div key={c.text} className={`flex items-center gap-2 px-2 py-1.5 rounded transition ${
+                                vote === 'up' ? 'bg-emerald-500/15 border border-emerald-500/30' :
+                                vote === 'down' ? 'bg-red-500/10 border border-red-500/30 opacity-50' :
+                                'bg-slate-900/40 border border-white/5 hover:bg-slate-900/60'
+                              }`}>
+                                <span className="font-mono text-sm flex-1 truncate" title={c.text}>{c.text}</span>
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-700/40 text-slate-400 shrink-0">{c.source}</span>
+                                <span className="text-[10px] text-slate-500 w-10 text-right shrink-0">w {c.weight.toFixed(0)}</span>
+                                <button
+                                  onClick={() => voteCandidate(c, 'up')}
+                                  disabled={!!vote}
+                                  className={`text-xs px-2 py-0.5 rounded transition disabled:cursor-default ${
+                                    vote === 'up' ? 'bg-emerald-600 text-white' : 'bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/40'
+                                  }`}
+                                  title="Это годится — добавить в обучение Director'а с rating +2">
+                                  ✓ годится
+                                </button>
+                                <button
+                                  onClick={() => voteCandidate(c, 'down')}
+                                  disabled={!!vote}
+                                  className={`text-xs px-2 py-0.5 rounded transition disabled:cursor-default ${
+                                    vote === 'down' ? 'bg-red-600 text-white' : 'bg-red-500/20 text-red-300 hover:bg-red-500/40'
+                                  }`}
+                                  title="Мусор — отметить с rating -2 чтобы Director не предлагал такое">
+                                  ✗ мусор
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {brief.supportingKeywords?.length > 0 && (
+                      <div>
+                        <div className="text-xs uppercase text-slate-400 mb-2">Supporting Keywords</div>
+                        <div className="flex flex-wrap gap-1">
+                          {brief.supportingKeywords.map((k: any) => (
+                            <span key={k.keyword} className="px-2 py-1 rounded bg-blue-500/10 text-blue-300 text-xs border border-blue-500/30">
+                              {k.keyword} <span className="text-slate-500">({k.volume?.toLocaleString() || '0'})</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {brief.serpCompetitors?.length > 0 && (
+                      <div>
+                        <div className="text-xs uppercase text-slate-400 mb-2">SERP Competitors (top-5)</div>
+                        <div className="space-y-1">
+                          {brief.serpCompetitors.map((c: any) => (
+                            <a key={c.position} href={c.url} target="_blank" rel="noopener"
+                              className="block rounded bg-slate-900/40 hover:bg-slate-900/60 p-2 text-xs">
+                              <span className="text-slate-500 mr-2">{c.position}.</span>
+                              <span className="text-blue-300">{c.domain}</span>
+                              <div className="text-slate-400 mt-0.5">{c.title}</div>
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+                      <div className="text-xs uppercase text-emerald-300 mb-2">💡 Local signals</div>
+                      <div className="text-xs space-y-0.5">
+                        <div>City: {brief.localSignals?.city}</div>
+                        <div>PLZ: {brief.localSignals?.plz || '—'}</div>
+                        {brief.localSignals?.hwkChamber && (
+                          <div>HWK chamber: <a href={brief.localSignals.hwkChamber} target="_blank" className="text-blue-300 hover:underline">{brief.localSignals.hwkChamber}</a></div>
+                        )}
+                        <div>Verified Handwerker: {brief.localSignals?.registeredHandwerker ? '✓' : '✗'}</div>
+                      </div>
+                    </div>
+
+                    {brief.recommendations?.length > 0 && (
+                      <div>
+                        <div className="text-xs uppercase text-slate-400 mb-2">Audit recommendations (что предложить продавать)</div>
+                        <div className="flex flex-wrap gap-1">
+                          {brief.recommendations.map((rr: string) => (
+                            <span key={rr} className="px-2 py-1 rounded bg-amber-500/10 text-amber-300 text-xs border border-amber-500/30">{rr}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Director training feedback */}
+                    <TrainingFeedbackPanel
+                      kind="brief-edit"
+                      subject={{ providerId: brief.providerId, category: brief.category, city: brief.city }}
+                      originalData={brief}
+                      onSaved={() => loadBrief(brief.providerId)}
+                    />
+
+                    {/* SEMANTIC CLUSTERS — group similar keywords by embedding */}
+                    {semanticClusters.length > 0 && (
+                      <div>
+                        <div className="text-xs uppercase text-purple-300 mb-2">
+                          📦 Семантические кластеры ({semanticClusters.length}) — для BBITE Site Factory
+                        </div>
+                        <div className="space-y-2">
+                          {semanticClusters.map((c: any) => {
+                            const r = c.llmReview;
+                            const effPageType = r?.refinedPageType || c.pageType;
+                            const displayName = r?.suggestedName || c.clusterName;
+                            return (
+                            <div key={c._id} className={`rounded-lg border p-3 ${
+                              r?.flags?.length > 0 ? 'border-amber-500/40 bg-amber-500/5' :
+                              r?.qualityScore !== undefined && r.qualityScore < 5 ? 'border-red-500/30 bg-red-500/5' :
+                              'border-purple-500/30 bg-purple-500/5'
+                            }`}>
+                              <div className="flex items-baseline gap-2 mb-2 flex-wrap">
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                                  effPageType === 'pricing' ? 'bg-emerald-500/20 text-emerald-300' :
+                                  effPageType === 'faq' ? 'bg-amber-500/20 text-amber-300' :
+                                  effPageType === 'job-page' ? 'bg-slate-500/20 text-slate-300' :
+                                  effPageType === 'general' ? 'bg-slate-500/20 text-slate-400' :
+                                  'bg-blue-500/20 text-blue-300'
+                                }`}>
+                                  {effPageType}
+                                </span>
+                                <span className="font-semibold text-sm">{displayName}</span>
+                                {r?.qualityScore !== undefined && (
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+                                    r.qualityScore >= 7 ? 'bg-emerald-500/20 text-emerald-300' :
+                                    r.qualityScore >= 4 ? 'bg-amber-500/20 text-amber-300' :
+                                    'bg-red-500/20 text-red-300'
+                                  }`} title={`AI quality score`}>
+                                    🤖 {r.qualityScore}/10
+                                  </span>
+                                )}
+                                {r?.flags?.map((f: string) => (
+                                  <span key={f} className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300">
+                                    ⚠ {f}
+                                  </span>
+                                ))}
+                                <span className="text-[10px] text-slate-500 ml-auto">
+                                  {c.size} kw · vol {c.volumeTotal?.toLocaleString()}
+                                </span>
+                              </div>
+                              {r?.notes && (
+                                <div className="text-[11px] text-slate-300 italic mb-2">💬 {r.notes}</div>
+                              )}
+                              {c.supportingKeywords?.length > 0 && (
+                                <div className="flex flex-wrap gap-1">
+                                  {c.supportingKeywords.slice(0, 12).map((s: any) => (
+                                    <span key={s.keyword} className="text-[11px] bg-slate-700/30 hover:bg-slate-700/50 rounded px-1.5 py-0.5">
+                                      <span className="text-slate-300">{s.keyword}</span>
+                                      <span className="text-slate-500 ml-1">{Math.round((s.similarity || 0) * 100)}%</span>
+                                    </span>
+                                  ))}
+                                  {c.supportingKeywords.length > 12 && (
+                                    <span className="text-[10px] text-slate-500 px-1.5">+{c.supportingKeywords.length - 12}</span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Keyword cluster — top-50 для (category, city) */}
+                    {keywordCluster.length > 0 && (
+                      <div>
+                        <div className="text-xs uppercase text-slate-400 mb-2">
+                          Keyword cluster — top {keywordCluster.length} для {brief.category} / {brief.city}
+                        </div>
+                        <div className="rounded-lg border border-white/10 bg-slate-900/40 max-h-64 overflow-auto">
+                          <table className="w-full text-xs">
+                            <thead className="bg-slate-900/80 sticky top-0">
+                              <tr className="text-left text-slate-400">
+                                <th className="px-2 py-1.5">Keyword</th>
+                                <th className="px-2 py-1.5 text-right">Vol</th>
+                                <th className="px-2 py-1.5 text-right">Diff</th>
+                                <th className="px-2 py-1.5 text-right">Score</th>
+                                <th className="px-2 py-1.5 text-emerald-400">GSC</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {keywordCluster.map((k: any) => (
+                                <tr key={k._id} className="border-t border-white/5 hover:bg-blue-500/5">
+                                  <td className="px-2 py-1.5 font-medium">{k.keyword}</td>
+                                  <td className="px-2 py-1.5 text-right">{k.volume?.toLocaleString() || '—'}</td>
+                                  <td className="px-2 py-1.5 text-right">{k.difficulty || '—'}</td>
+                                  <td className="px-2 py-1.5 text-right text-blue-300 font-semibold">{k.score?.toFixed(1) || '—'}</td>
+                                  <td className="px-2 py-1.5 text-emerald-400">{k.gscPosition ? `pos ${k.gscPosition.toFixed(1)}` : '—'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Training history — что юзер уже правил для этого провайдера */}
+                    {trainingRecords.length > 0 && (
+                      <div>
+                        <div className="text-xs uppercase text-slate-400 mb-2">
+                          🤖 Training history — {trainingRecords.length} feedback записей
+                        </div>
+                        <div className="space-y-1.5">
+                          {trainingRecords.map((t: any) => (
+                            <div key={t._id} className="rounded bg-slate-900/40 border border-white/5 p-2 text-xs">
+                              <div className="flex items-baseline gap-2">
+                                <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 text-[10px]">{t.kind}</span>
+                                <span className={`text-[10px] ${
+                                  t.rating > 0 ? 'text-emerald-400' : t.rating < 0 ? 'text-red-400' : 'text-slate-500'
+                                }`}>
+                                  {t.rating > 0 ? `+${t.rating}` : t.rating}
+                                </span>
+                                <span className="text-slate-500 ml-auto">{new Date(t.createdAt).toLocaleString('ru')}</span>
+                              </div>
+                              {t.userComment && <div className="mt-1 text-slate-300">{t.userComment}</div>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+
+                    <details className="text-xs">
+                      <summary className="cursor-pointer text-slate-400 hover:text-slate-200">Raw brief JSON (для BBITE)</summary>
+                      <pre className="mt-2 p-2 bg-slate-900/60 rounded overflow-x-auto">{JSON.stringify(brief, null, 2)}</pre>
+                    </details>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* STICKY BULK TOOLBAR — появляется при manual-выборке через чекбоксы */}
+      {selectedIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 rounded-2xl border border-blue-500/40 bg-slate-900/95 backdrop-blur-xl px-5 py-3 shadow-2xl shadow-blue-500/30">
+          <span className="text-sm">
+            Выбрано: <b className="text-blue-300">{selectedIds.size}</b>
+            {selectedIds.size >= 500 && <span className="text-amber-400 ml-2 text-xs">(max 500)</span>}
+          </span>
+          <button onClick={openBulkConfirmManual}
+            className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-sm font-medium">
+            🎯 Run SEO research
+          </button>
+          <button onClick={clearSelection} className="text-xs text-slate-400 hover:text-white">× очистить</button>
+        </div>
+      )}
+
+      {/* BULK CONFIRM MODAL */}
+      {bulkConfirm && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+          onClick={() => !bulkConfirm.submitting && setBulkConfirm(null)}>
+          <div className="bg-slate-800 border border-slate-700 rounded-xl max-w-lg w-full p-6"
+            onClick={e => e.stopPropagation()}>
+            <h2 className="text-lg font-semibold mb-3">Bulk SEO Research</h2>
+            <div className="space-y-2 text-sm text-slate-300">
+              {bulkConfirm.kind === 'smart-target' ? (
+                <>
+                  <div><b>Smart-target:</b> {bulkConfirm.label || bulkConfirm.targetId}</div>
+                  {bulkConfirm.description && <div className="text-xs text-slate-400">{bulkConfirm.description}</div>}
+                </>
+              ) : (
+                <div><b>Manual selection</b></div>
+              )}
+              <div><b>Провайдеров:</b> {bulkConfirm.count?.toLocaleString() ?? '...'}</div>
+              {bulkConfirm.count && bulkConfirm.count > 1000 && (
+                <div className="text-xs text-amber-400">⚡ &gt;1000 → автоматически IPRoyal proxy для autocomplete</div>
+              )}
+              <div className="mt-3">
+                <label className="text-xs text-slate-400">Pipeline:</label>
+                <div className="flex gap-2 mt-1">
+                  {(['brief-only', 'full-research'] as const).map(p => (
+                    <button key={p}
+                      onClick={() => setBulkConfirm(b => b ? { ...b, pipeline: p } : b)}
+                      className={`px-3 py-1.5 rounded text-xs ${
+                        bulkConfirm.pipeline === p
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-slate-700/40 text-slate-300 hover:bg-slate-700/60'
+                      }`}>
+                      {p === 'brief-only' ? 'Brief only (быстро, только чтение)' : 'Full research (autocomplete + brief)'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {bulkConfirm.sample && bulkConfirm.sample.length > 0 && (
+                <div className="mt-3 text-xs">
+                  <div className="text-slate-400 mb-1">Sample (первые 5):</div>
+                  <ul className="space-y-0.5 text-slate-300">
+                    {bulkConfirm.sample.map(s => (
+                      <li key={s._id}>• {s.name} <span className="text-slate-500">— {s.category} / {s.city}</span></li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 mt-5">
+              <button onClick={() => setBulkConfirm(null)} disabled={bulkConfirm.submitting}
+                className="px-4 py-2 rounded text-sm text-slate-300 hover:bg-slate-700/40">Отмена</button>
+              <button onClick={submitBulkJob} disabled={bulkConfirm.submitting || !bulkConfirm.count}
+                className="px-4 py-2 rounded bg-blue-600 hover:bg-blue-700 text-sm font-medium disabled:opacity-50">
+                {bulkConfirm.submitting ? 'Создаю...' : 'Создать job →'}
+              </button>
             </div>
           </div>
         </div>

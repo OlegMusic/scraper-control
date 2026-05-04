@@ -15,6 +15,12 @@ import proxyRoute from './routes/proxy.js';
 import personasRoute from './routes/personas.js';
 import databaseRoute from './routes/database.js';
 import dbChatRoute from './routes/db-chat.js';
+import seoRoute from './routes/seo.js';
+import seoJobsRoute from './routes/seo-jobs.js';
+import agentsRoute from './routes/agents.js';
+import * as seoJobWorker from './seo-pipeline/seoJobWorker.js';
+import { initCollection as initQdrant } from './seo-pipeline/qdrantTraining.js';
+import { ensureIndexesAndLog } from './ensureIndexes.js';
 
 async function main() {
   await connectDb();
@@ -33,18 +39,27 @@ async function main() {
   app.use('/api/personas', personasRoute);
   app.use('/api/database', databaseRoute);
   app.use('/api/db-chat', dbChatRoute);
+  app.use('/api/seo', seoRoute);
+  app.use('/api/seo-jobs', seoJobsRoute);
+  app.use('/api/agents', agentsRoute);
 
   const server = http.createServer(app);
   const io = new IOServer(server, {
     cors: { origin: '*' },
   });
   setIo(io);
+  seoJobWorker.setIo(io);
   io.on('connection', socket => {
     console.log(`[ws] client ${socket.id} connected`);
     socket.on('disconnect', () => console.log(`[ws] client ${socket.id} disconnected`));
   });
 
   await loadAndScheduleAll();
+  await seoJobWorker.reapZombies();
+  seoJobWorker.startTick();
+  initQdrant().catch(e => console.warn('[qdrant] init error:', e.message));
+  // Не await — индексы строятся в фоне, не блочат boot
+  ensureIndexesAndLog();
 
   server.listen(config.port, '127.0.0.1', () => {
     console.log(`[server] http://127.0.0.1:${config.port}`);

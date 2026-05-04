@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter, Route, Routes, NavLink, Navigate } from 'react-router-dom';
+import { BrowserRouter, Route, Routes, NavLink, Navigate, useLocation } from 'react-router-dom';
 import './index.css';
 import { Dashboard } from './pages/Dashboard';
 import { Schedule } from './pages/Schedule';
@@ -9,7 +9,57 @@ import { Settings } from './pages/Settings';
 import { Director } from './pages/Director';
 import { ProxyPage } from './pages/Proxy';
 import { Database } from './pages/Database';
+import { SEO } from './pages/SEO';
+import { Agents } from './pages/Agents';
 import { GlobalChat } from './components/GlobalChat';
+
+class RouteErrorBoundary extends React.Component<
+  { resetKey: string; children: React.ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('[RouteErrorBoundary]', error, info);
+  }
+  componentDidUpdate(prev: { resetKey: string }) {
+    if (prev.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="rounded-2xl border border-red-500/40 bg-red-500/10 p-6 text-sm">
+          <div className="font-semibold text-red-300 mb-2">Страница упала с ошибкой</div>
+          <pre className="text-xs whitespace-pre-wrap text-red-200/80">{String(this.state.error?.stack || this.state.error)}</pre>
+          <div className="mt-3 text-xs text-slate-400">Меню сверху работает — переключись на другую вкладку.</div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function RoutesWithBoundary() {
+  const loc = useLocation();
+  return (
+    <RouteErrorBoundary resetKey={loc.pathname}>
+      <Routes>
+        <Route path="/" element={<Navigate to="/director" replace />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/schedule" element={<Schedule />} />
+        <Route path="/stats" element={<Stats />} />
+        <Route path="/settings" element={<Settings />} />
+        <Route path="/director" element={<Director />} />
+        <Route path="/proxy" element={<ProxyPage />} />
+        <Route path="/database" element={<Database />} />
+        <Route path="/seo" element={<SEO />} />
+        <Route path="/agents" element={<Agents />} />
+      </Routes>
+    </RouteErrorBoundary>
+  );
+}
 
 function Shell() {
   const tab = (to: string, icon: string, label: string) => (
@@ -39,8 +89,10 @@ function Shell() {
             {/* Nav */}
             <nav className="flex gap-1.5 ml-2 overflow-x-auto">
               {tab('/director', '🤖', 'Директор')}
+              {tab('/agents', '🧠', 'Агенты')}
               {tab('/dashboard', '⚡', 'Скраперы')}
               {tab('/database', '🗄', 'База')}
+              {tab('/seo', '🎯', 'SEO')}
               {tab('/schedule', '⏰', 'Расписание')}
               {tab('/stats', '📊', 'Статистика')}
               {tab('/proxy', '🌐', 'Прокси')}
@@ -50,16 +102,7 @@ function Shell() {
         </div>
       </header>
       <main className="flex-1 max-w-[1500px] mx-auto px-6 pb-10 w-full fade-up">
-        <Routes>
-          <Route path="/" element={<Navigate to="/director" replace />} />
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/schedule" element={<Schedule />} />
-          <Route path="/stats" element={<Stats />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/director" element={<Director />} />
-          <Route path="/proxy" element={<ProxyPage />} />
-          <Route path="/database" element={<Database />} />
-        </Routes>
+        <RoutesWithBoundary />
       </main>
       <GlobalChat />
     </div>
